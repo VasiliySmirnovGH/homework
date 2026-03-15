@@ -1,0 +1,112 @@
+name: Build, Test & Publish
+
+# ─── Триггеры ────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:          # позволяет запустить вручную из вкладки Actions
+
+# ─── Переменные ──────────────────────────────────────────────────────────────
+env:
+  DOTNET_VERSION: '8.0.x'
+  PROJECT_PATH:   'EditDistanceApp.csproj'   # путь к .csproj от корня репо
+
+# ─── Jobs ────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── 1. Сборка и тесты ──────────────────────────────────────────────────────
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # Кешируем пакеты NuGet — ускоряет повторные запуски
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore ${{ env.PROJECT_PATH }}
+
+      - name: Build (Release)
+        run: dotnet build ${{ env.PROJECT_PATH }} --no-restore --configuration Release
+
+      - name: Run tests
+        run: dotnet test ${{ env.PROJECT_PATH }} --no-build --configuration Release --verbosity normal
+
+  # ── 2. Проверка стиля кода (необязательно, раскомментировать при желании) ──
+  # format-check:
+  #   name: Code Format Check
+  #   runs-on: ubuntu-latest
+  #   needs: build-and-test
+  #
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - uses: actions/setup-dotnet@v4
+  #       with:
+  #         dotnet-version: ${{ env.DOTNET_VERSION }}
+  #
+  #     - name: Check formatting
+  #       run: dotnet format ${{ env.PROJECT_PATH }} --verify-no-changes
+
+  # ── 3. Публикация артефакта (exe / dll) ────────────────────────────────────
+  publish:
+    name: Publish Artifact
+    runs-on: ubuntu-latest
+    needs: build-and-test           # запускается только после успешного build
+    # Публикуем только при пуше в main, не на каждый PR
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore ${{ env.PROJECT_PATH }}
+
+      # Self-contained = не требует установленного .NET на целевой машине
+      - name: Publish (self-contained, linux-x64)
+        run: |
+          dotnet publish ${{ env.PROJECT_PATH }} \
+            --configuration Release \
+            --runtime linux-x64 \
+            --self-contained true \
+            --output ./publish/linux-x64
+
+      # Если нужен Windows-билд — раскомментируй блок ниже
+      # - name: Publish (self-contained, win-x64)
+      #   run: |
+      #     dotnet publish ${{ env.PROJECT_PATH }} \
+      #       --configuration Release \
+      #       --runtime win-x64 \
+      #       --self-contained true \
+      #       --output ./publish/win-x64
+
+      # Загружаем собранный бинарник как артефакт GitHub Actions
+      # (доступен во вкладке Actions → конкретный запуск → Artifacts)
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EditDistanceApp-linux-x64
+          path: ./publish/linux-x64/
+          retention-days: 30          # сколько дней хранить (макс. 90)
